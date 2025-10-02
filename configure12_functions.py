@@ -185,7 +185,7 @@ def initial_pop(f_pop_size,f_chrom_len_ponds_locat, f_chrom_len_ponds_size,
 
 
 #-----------------------------------------------------------------------------#
-# Assign depth steps to pond genes in size chromosomes
+# Calculate area under the curve (AUC)
 #-----------------------------------------------------------------------------#
 def auc_func(cost, damage):
     arr = np.column_stack((cost, damage))
@@ -933,4 +933,5 @@ def remove_same_objectives_population(f_comb_population, f_dup_idx_obj):
 
 ###############################################################################
 """ Functions section ends here """
+
 ###############################################################################
