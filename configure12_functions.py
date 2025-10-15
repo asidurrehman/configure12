@@ -7,7 +7,10 @@
 File name: configure12_functions.py
 
 @author: Asid Ur Rehman
+
 Exposure analysis adapted from Robert Berstch
+(https://doi.org/10.1016/j.envsoft.2022.105490)
+
 Organisation: Newcastle University
 
 About
@@ -935,3 +938,4 @@ def remove_same_objectives_population(f_comb_population, f_dup_idx_obj):
 """ Functions section ends here """
 
 ###############################################################################
+
