@@ -7,7 +7,10 @@
 File name: configure12_main.py
 
 @author: Asid Ur Rehman
+
 Exposure analysis adapted from Robert Berstch
+(https://doi.org/10.1016/j.envsoft.2022.105490)
+
 Organisation: Newcastle University
 
 About
@@ -723,4 +726,5 @@ opt_df.to_csv('optimised_data.csv', index_label='SN')
 
 #-----------------------------------------------------------------------------#
 """ THE END """
+
 #-----------------------------------------------------------------------------#
