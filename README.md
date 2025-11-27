@@ -5,7 +5,7 @@ This repository contains Python code for the Cost-benefit Optimisation Framework
 ## Note
   Asid Ur Rehman developed this optimisation framework as part of his PhD study at Newcastle University. If you use this code, please acknowledge its source with the following citation:
 
-  *Rehman, A. U., Glenis, V., Lewis, E., Kilsby, C., & Walsh, C. (2025). Integrated evolutionary optimisation framework for explicit configuration of detention ponds in urban flood risk management. International Journal of Disaster Risk Reduction, 105901.*
+  *Ur Rehman, A., Glenis, V., Lewis, E., Kilsby, C., & Walsh, C. (2025). Integrated evolutionary optimisation framework for explicit configuration of detention ponds in urban flood risk management. International Journal of Disaster Risk Reduction, 105901.*
 
 ## Licence  
 Asid Ur Rehman (C) 2025. Licenced under the terms of the GNU General Public License v3.0
