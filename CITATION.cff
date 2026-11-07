@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the article below."
+type: software
+title: "CONFIGURE v1.2: Cost-benefit Optimisation Framework for Implementing blue-Green infrastructURE (detention ponds)"
+version: 1.2.0
+authors:
+  - family-names: Ur Rehman
+    given-names: Asid
+    affiliation: Newcastle University
+license: GPL-3.0-only
+repository-code: "https://github.com/asidurrehman/Configure12"
+abstract: >-
+  CONFIGURE couples the NSGA-II multi-objective genetic algorithm with the
+  CityCAT hydrodynamic flood model. Version 1.2 optimises the location and size
+  of detention ponds against pond life cycle cost and Expected Annual Damage
+  for multiple rainfall return periods.
+keywords:
+  - flood risk management
+  - blue-green infrastructure
+  - detention ponds
+  - multi-objective optimisation
+  - NSGA-II
+  - CityCAT
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Ur Rehman
+      given-names: Asid
+    - family-names: Glenis
+      given-names: Vassilis
+    - family-names: Lewis
+      given-names: Elizabeth
+    - family-names: Kilsby
+      given-names: Chris
+    - family-names: Walsh
+      given-names: Claire
+  title: "Integrated evolutionary optimisation framework for explicit configuration of detention ponds in urban flood risk management"
+  journal: "International Journal of Disaster Risk Reduction"
+  volume: 131
+  start: "105901"
+  year: 2025
+  doi: 10.1016/j.ijdrr.2025.105901
