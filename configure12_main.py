@@ -32,31 +32,43 @@ import geopandas as gpd
 import sys
 import warnings
 import copy
-import importlib.util
+import argparse
+from pathlib import Path
+
+import yaml
 
 warnings.filterwarnings("ignore")
+
+#-----------------------------------------------------------------------------#
+# Read the run configuration (config.yaml)
+#-----------------------------------------------------------------------------#
+SCRIPT_DIR = Path(__file__).resolve().parent
+parser = argparse.ArgumentParser(
+    description="Run CONFIGURE v1.2 (detention pond optimisation with CityCAT)")
+parser.add_argument("--config", default=str(SCRIPT_DIR / "config.yaml"),
+                    help="Path to the YAML configuration file")
+args, _ = parser.parse_known_args()  # parse_known_args keeps Spyder/IPython working
+with open(args.config, "r", encoding="utf-8") as f:
+    config = yaml.safe_load(f)
+
+# Load the CONFIGURE functions from the same folder as this script
+sys.path.insert(0, str(SCRIPT_DIR))
+import configure12_functions as cf
 
 #-----------------------------------------------------------------------------#
 # Creating and setting folders and paths
 #-----------------------------------------------------------------------------#
 # CityCAT run path
-run_path = os.path.join('C:', os.path.sep, 'z', 'configure12')
-
-configure_func_path = os.path.join(run_path, 'codes',
-                                   'configure12_functions.py')
-# Load configure_func
-spec1 = importlib.util.spec_from_file_location("configure_func", configure_func_path)
-cf = importlib.util.module_from_spec(spec1)
-spec1.loader.exec_module(cf)
+run_path = os.path.normpath(config["run_path"])
 
 # Change working directory
 os.chdir(run_path)
 # Show working directory
 print("Current working directory: {0}".format(os.getcwd()))
 # CityCAT rainfall file numbers
-rainfall_num = np.array([1060, 2060, 3060, 5060, 10060])
+rainfall_num = np.array(config["rainfall_num"])
 # CityCAT configuration file number
-config_num = 3
+config_num = config["config_num"]
 
 # Buildings shapefile
 bldg_file = os.path.join(run_path, 'vector', 'buildings.shp')
@@ -96,7 +108,7 @@ ponds_grid_shp = gpd.read_file(os.path.join(run_path,
                                     'vector', 'all_possible_ponds_grid.shp'))
 # Life cycle cost of a pond (25 years)
 # Life cycle cost is calculated as pounds per cubic metre
-pond_unit_vol_lcc = 153.2
+pond_unit_vol_lcc = config["pond_unit_vol_lcc"]  # 153.2 in the published study
 # One time construction cost
 pond_unit_vol_copex = 89.42
 # Operations and maintenance cost uses inflated values
@@ -180,10 +192,10 @@ chrom_len_ponds_locat = ponds_count
 chrom_len_ponds_size = int(ponds_stat['area_steps'].sum())
 
 # Population size
-pop_size = 100
+pop_size = config["pop_size"]
 
 # Maximum generations to terminate optimisation
-max_generations = 50
+max_generations = config["max_generations"]
 
 # Termination criterion based on marginal decrease in area under the curve
 auc = np.zeros(max_generations + 1)  # store area under the curve
@@ -245,8 +257,8 @@ plot_legend_series_1 = "Good solution"
 plot_legend_series_2 = "Evolving solution"
 
 # For T = 60 multi return optimisation
-plot_x_limit = [-0.05, 3.1]
-plot_y_limit = [5.84, 6.4]  # for 60y30m
+plot_x_limit = config["plot_x_limit"]  # [-0.05, 3.1] in the published study
+plot_y_limit = config["plot_y_limit"]  # [5.84, 6.4] for 60y30m
 plot_x_axis_label = "Intervention cost (million £)"
 plot_y_axis_label = "Direct damage cost (million £)"
 save_file = "Generation_No_0"

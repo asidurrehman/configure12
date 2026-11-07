@@ -1,0 +1,40 @@
+# -----------------------------------------------------------------------------
+# CONFIGURE v1.2 - run configuration
+#
+# configure12_main.py reads this file at start-up. To use a different file:
+#     python configure12_main.py --config path/to/my_config.yaml
+#
+# The values below are the settings used for the published study.
+# Change them to suit your own case study.
+# -----------------------------------------------------------------------------
+
+# Folder that holds the CityCAT model set-up and all input data
+# (see "Input data and folder layout" in README.md). The script changes its
+# working directory to this folder, and all outputs are written here.
+# Use forward slashes, e.g. C:/z/configure12
+run_path: C:/z/configure12
+
+# CityCAT rainfall file numbers, one per return period, in this order:
+# T = 10, 20, 30, 50 and 100 years. The Expected Annual Damage (EAD)
+# calculation in configure12_main.py assumes exactly these five return periods
+# in this order.
+rainfall_num: [1060, 2060, 3060, 5060, 10060]
+
+# CityCAT configuration file number used for the optimisation runs
+config_num: 3
+
+# Number of candidate solutions (chromosomes) in each generation
+pop_size: 100
+
+# Maximum number of generations. The run can stop earlier if the area under
+# the cost-damage curve stops improving (see the termination criterion in
+# configure12_main.py).
+max_generations: 50
+
+# Pond life cycle cost (25 years) in pounds per cubic metre of storage
+pond_unit_vol_lcc: 153.2
+
+# Axis limits [min, max] for the generation scatter plots
+# x = intervention cost (million GBP), y = damage (million GBP)
+plot_x_limit: [-0.05, 3.1]
+plot_y_limit: [5.84, 6.4]
