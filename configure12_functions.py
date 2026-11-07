@@ -51,6 +51,43 @@ warnings.filterwarnings("ignore")
 #-----------------------------------------------------------------------------#
 def spatial_indices(f_bldg_file, f_run_path, f_idx_rainfall, f_idx_config,
                     f_csv_file):
+    """Run CityCAT once and link each building to the grid cells around it.
+
+    CityCAT is run for rainfall ``f_idx_rainfall`` and configuration
+    ``f_idx_config`` so that its maximum-depth CSV (``f_csv_file``) can be used
+    to find the grid cells that fall inside a buffer around each building
+    (150 % of the grid resolution). These indices are computed once and reused
+    for the exposure analysis in every generation.
+
+    Parameters
+    ----------
+    f_bldg_file : str
+        Path to the buildings shapefile (needs a ``UID`` field and geometry).
+    f_run_path : str
+        CityCAT run folder (contains ``citycat.exe``).
+    f_idx_rainfall : int
+        CityCAT rainfall file number for the indexing run.
+    f_idx_config : int
+        CityCAT configuration file number for the indexing run.
+    f_csv_file : str
+        CityCAT maximum-depth CSV written by the indexing run (x, y and depth
+        columns after one header row).
+
+    Returns
+    -------
+    shp_field : str
+        Name of the building ID field (``"UID"``).
+    cell_index : list of int
+        Row number (in the depth CSV) of each grid cell that intersects a
+        building buffer.
+    buffer_list : list
+        Building ID for each entry of ``cell_index``.
+
+    Notes
+    -----
+    CityCAT is started through the Windows command shell
+    (``cd <run_path> & citycat.exe -r R -c C``).
+    """
     subprocess.call('cd {run_path} & citycat.exe -r {r} -c {c}'.format
                     (run_path = f_run_path, r = f_idx_rainfall, 
                      c = f_idx_config), shell=True)
@@ -129,6 +166,22 @@ def spatial_indices(f_bldg_file, f_run_path, f_idx_rainfall, f_idx_config,
 # Read DEM ASCII file 
 #-----------------------------------------------------------------------------#
 def read_dem_ascii(file_path):
+    """Read a DEM stored as an ESRI ASCII grid (``.asc``).
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the ``.asc`` file. The first six lines must be the header
+        (``ncols``, ``nrows``, ``xllcorner``, ``yllcorner``, ``cellsize``,
+        ``NODATA_value``).
+
+    Returns
+    -------
+    metadata : dict
+        Header keys mapped to their values (as strings).
+    data : numpy.ndarray
+        Elevations, shape (nrows, ncols).
+    """
     with open(file_path, 'r') as file:
         metadata = {}
         for _ in range(6):
@@ -147,6 +200,40 @@ def read_dem_ascii(file_path):
 def initial_pop(f_pop_size,f_chrom_len_ponds_locat, f_chrom_len_ponds_size,
                                     f_ponds_gene_start, f_ponds_gene_end):
     # generate random population for location chromosomes
+    """Create the initial random population of pond configurations.
+
+    Each candidate solution has three linked forms: a location chromosome (one
+    binary gene per pond: pond used or not), a size chromosome (a block of
+    binary size-step genes for each pond) and the pond size values (number of
+    size steps switched on for each pond). Random size chromosomes are drawn
+    until they are all different. The second-to-last location chromosome is
+    all zeros (no-pond baseline) and the last location and size chromosomes are
+    all ones (every pond at full size). Size genes of ponds that are switched
+    off are set to zero.
+
+    Parameters
+    ----------
+    f_pop_size : int
+        Number of candidate solutions.
+    f_chrom_len_ponds_locat : int
+        Number of candidate ponds (length of the location chromosome).
+    f_chrom_len_ponds_size : int
+        Total number of size steps over all ponds (length of the size
+        chromosome).
+    f_ponds_gene_start, f_ponds_gene_end : numpy.ndarray
+        Start (inclusive) and end (exclusive) of each pond's block of genes in
+        the size chromosome.
+
+    Returns
+    -------
+    i_pop_ponds_locat : numpy.ndarray
+        Location chromosomes, shape (f_pop_size, f_chrom_len_ponds_locat).
+    i_pop_ponds_size_uniq : numpy.ndarray
+        Size chromosomes, shape (f_pop_size, f_chrom_len_ponds_size).
+    i_pop_ponds_size_val : numpy.ndarray
+        Number of size steps switched on for each pond, shape
+        (f_pop_size, f_chrom_len_ponds_locat).
+    """
     i_pop_ponds_locat = np.random.randint(2, size = (f_pop_size,
                                                     f_chrom_len_ponds_locat))
     
@@ -191,6 +278,24 @@ def initial_pop(f_pop_size,f_chrom_len_ponds_locat, f_chrom_len_ponds_size,
 # Calculate area under the curve (AUC)
 #-----------------------------------------------------------------------------#
 def auc_func(cost, damage):
+    """Area under the cost-damage curve, used for the termination criterion.
+
+    Solutions are sorted by cost, damage is shifted so that the lowest damage
+    is zero, and the area is integrated with the trapezoidal rule. The main
+    script stops when this area stops decreasing between generations.
+
+    Parameters
+    ----------
+    cost : array_like
+        Intervention cost of each solution, shape (n, 1) or (n,).
+    damage : array_like
+        Damage of each solution, same shape as ``cost``.
+
+    Returns
+    -------
+    float
+        Area under the curve.
+    """
     arr = np.column_stack((cost, damage))
     df = pd.DataFrame(arr, columns=['Cost', 'Damage'])
     df = df.sort_values(by='Cost')
@@ -213,6 +318,82 @@ def citycat_exposure(f_bldg_file,
                      f_buffer_list, f_generation, f_res_dd, f_nonres_dd):
            
     # cost of combined features
+    """Simulate each candidate solution with CityCAT and work out its cost and damage.
+
+    For every candidate solution the function:
+
+    1. picks the grid cells of each pond (the cells nearest the pond's lowest
+       point, as many as its size steps allow) and works out pond volumes and
+       life cycle cost;
+    2. burns the ponds into the DEM and writes ``Domain_DEM.asc`` in
+       ``f_run_path``;
+    3. runs CityCAT once for each rainfall (return period);
+    4. reads the maximum water depths around each building, classifies
+       buildings as low, medium or high exposure, and calculates direct damage
+       from the depth-damage curves (residential per building; retail, offices
+       and public buildings per square metre of building area).
+
+    Parameters
+    ----------
+    f_bldg_file : str
+        Path to the buildings shapefile (fields ``UID`` and ``Type``).
+    f_chrom_len_ponds_locat : int
+        Number of candidate ponds.
+    f_pop_size : int
+        Number of candidate solutions to simulate.
+    f_run_path : str
+        CityCAT run folder.
+    f_rainfall_num : numpy.ndarray
+        CityCAT rainfall file numbers, one per return period.
+    f_config_num : int
+        CityCAT configuration file number.
+    f_pop_ponds_size_val : numpy.ndarray
+        Number of size steps for each pond in each solution, shape
+        (f_pop_size, f_chrom_len_ponds_locat).
+    f_ponds_grid_shp1 : geopandas.GeoDataFrame
+        Pond grid cells with the fields prepared in ``configure12_main.py``
+        (``Id``, ``elevation``, ``lev_vol``, ``pond_cell_total_depth``).
+    f_ponds_depth : numpy.ndarray
+        Depth of each pond in metres, shape (1, n_ponds).
+    f_ponds_grid_cell_area : float
+        Area of one pond grid cell in square metres.
+    f_ponds_area_step_val : numpy.ndarray
+        Number of grid cells in one size step for each pond, shape (1, n_ponds).
+    f_pond_unit_vol_lcc : float
+        Pond life cycle cost per cubic metre (GBP).
+    f_catch_shp : geopandas.GeoDataFrame
+        Polygon covering the DEM extent.
+    f_dem_metadata : dict
+        DEM header from ``read_dem_ascii``.
+    f_dem_data : numpy.ndarray
+        Original DEM elevations from ``read_dem_ascii``.
+    f_shp_field, f_cell_index, f_buffer_list
+        Building ID field and building-to-cell links from ``spatial_indices``.
+    f_generation : int
+        Current generation (used in progress messages).
+    f_res_dd : numpy.ndarray
+        Residential depth-damage table: depth (m), damage (GBP).
+    f_nonres_dd : numpy.ndarray
+        Non-residential depth-damage table: depth (m), then damage per square
+        metre (GBP) for retail, offices and public buildings.
+
+    Returns
+    -------
+    f_chrom_ponds_volume : numpy.ndarray
+        Volume of each pond (m3), shape (f_pop_size, n_ponds).
+    f_chrom_cost : numpy.ndarray
+        Life cycle cost of each solution (million GBP), shape (f_pop_size, 1).
+    f_expo_high, f_expo_medium, f_expo_low : numpy.ndarray
+        Number of buildings in each exposure class, shape
+        (f_pop_size, n_rainfalls).
+    f_damage_cost : numpy.ndarray
+        Direct damage (GBP) for each rainfall, shape (f_pop_size, n_rainfalls).
+
+    Notes
+    -----
+    CityCAT is started through the Windows command shell
+    (``cd <run_path> & citycat.exe -r R -c C``).
+    """
     f_chrom_cost = np.zeros(f_pop_size)[:,np.newaxis]
     f_chrom_cost_penalty = np.zeros(f_pop_size)[:,np.newaxis]
     f_chrom_ponds_volume = np.zeros([f_pop_size, f_chrom_len_ponds_locat])
@@ -555,6 +736,24 @@ def citycat_exposure(f_bldg_file,
 # Non dominated sorting function
 #-----------------------------------------------------------------------------#
 def non_dominated_sorting(population_size,f_chroms_obj_record):
+    """Sort solutions into Pareto fronts (fast non-dominated sorting of NSGA-II).
+
+    Both objectives are minimised.
+
+    Parameters
+    ----------
+    population_size : int
+        Number of solutions.
+    f_chroms_obj_record : numpy.ndarray
+        Objective values, shape (population_size, 2): column 0 is cost and
+        column 1 is damage.
+
+    Returns
+    -------
+    dict
+        Front number (0 = non-dominated) mapped to the list of solution indices
+        in that front.
+    """
     s,n={},{}
     front,rank={},{}
     front[0]=[]     
@@ -603,6 +802,26 @@ def non_dominated_sorting(population_size,f_chroms_obj_record):
 # Calculate crowding distance
 #-----------------------------------------------------------------------------#
 def calculate_crowding_distance(f_front,f_chroms_obj_record):
+    """Crowding distance of each solution within its front (NSGA-II).
+
+    For each objective the solutions of a front are sorted and each one gets
+    the normalised distance between its two neighbours; the values for the two
+    objectives are added. The solutions at either end of a front get large
+    fixed values (666666666 for cost, 333333333 for damage) so that they are
+    always kept.
+
+    Parameters
+    ----------
+    f_front : dict
+        Fronts from ``non_dominated_sorting``.
+    f_chroms_obj_record : numpy.ndarray
+        Objective values, shape (n, 2).
+
+    Returns
+    -------
+    dict
+        Front number mapped to a dict of {solution index: crowding distance}.
+    """
     distance = {}
     for i in range(len(f_front)):
         distance[i] = dict.fromkeys(f_front[i], 0)
@@ -657,6 +876,20 @@ def calculate_crowding_distance(f_front,f_chroms_obj_record):
 # Sort population based on rank and crowding distance
 #-----------------------------------------------------------------------------#
 def fitness_sort(f_distance, f_pop_size):
+    """Order solutions by front and then by crowding distance (largest first).
+
+    Parameters
+    ----------
+    f_distance : dict
+        Crowding distances from ``calculate_crowding_distance``.
+    f_pop_size : int
+        Total number of solutions in ``f_distance``.
+
+    Returns
+    -------
+    list of int
+        Solution indices from fittest to least fit.
+    """
     f_distance_sort = {}
     for i in range(len(f_distance)):
         f_distance_sort[i] = {k: v for k, v in sorted(f_distance[i].items(), 
@@ -675,6 +908,23 @@ def fitness_sort(f_distance, f_pop_size):
 # Parent selection using binary tournament
 #-----------------------------------------------------------------------------#
 def fitter_parent(f_sorted_fitness,f_pop_size):
+    """Pick a parent by binary tournament.
+
+    Two different solutions are drawn at random and the one ranked higher in
+    ``f_sorted_fitness`` is returned.
+
+    Parameters
+    ----------
+    f_sorted_fitness : numpy.ndarray
+        Solution indices from fittest to least fit (from ``fitness_sort``).
+    f_pop_size : int
+        Population size.
+
+    Returns
+    -------
+    int
+        Index of the selected parent.
+    """
     pairs_rand = np.random.randint(f_pop_size, size = (1, 2))
     
     while pairs_rand[0,0] == pairs_rand[0,1]:
@@ -693,6 +943,39 @@ def crossover_uniform_mutation_bitflip(f_p1, f_p2, f_p1_loc, f_p2_loc,
                     f_co_prob, f_m_prob, f_chrom_len_ponds_locat,
                     f_chrom_len_ponds_size, p_start_locs, p_end_locs):
     
+    """Create two children with uniform crossover and bit-flip mutation.
+
+    Crossover and mutation are applied to the location chromosomes and then to
+    the size chromosomes. Size genes of ponds that are switched off in a
+    child's location chromosome are set to zero. If both children end up with
+    the same pond sizes, the second child's size chromosome is drawn again by
+    crossover (up to 5000 attempts).
+
+    Parameters
+    ----------
+    f_p1, f_p2 : numpy.ndarray
+        Size chromosomes of the two parents.
+    f_p1_loc, f_p2_loc : numpy.ndarray
+        Location chromosomes of the two parents.
+    f_co_prob : float
+        Probability of taking each gene from the other parent.
+    f_m_prob : array_like
+        Mutation probabilities: [location genes, size genes].
+    f_chrom_len_ponds_locat : int
+        Number of candidate ponds.
+    f_chrom_len_ponds_size : int
+        Length of the size chromosome.
+    p_start_locs, p_end_locs : numpy.ndarray
+        Start (inclusive) and end (exclusive) of each pond's genes in the size
+        chromosome.
+
+    Returns
+    -------
+    f_c1, f_c2 : numpy.ndarray
+        Size chromosomes of the two children.
+    f_c1_ponds_value, f_c2_ponds_value : numpy.ndarray
+        Number of size steps switched on for each pond in each child.
+    """
     f_c1, f_c2 = copy.deepcopy(f_p1), copy.deepcopy(f_p2)
     f_c1_loc, f_c2_loc = copy.deepcopy(f_p1_loc), copy.deepcopy(f_p2_loc)
     
@@ -786,6 +1069,20 @@ def crossover_uniform_mutation_bitflip(f_p1, f_p2, f_p1_loc, f_p2_loc,
 #-----------------------------------------------------------------------------#
 def remove_duplicate_list(record_list):
     # print('\n' 'Checking duplicates in the list:')
+    """Remove repeated rows, keeping the first occurrence.
+
+    Parameters
+    ----------
+    record_list : numpy.ndarray
+        Rows to check, e.g. the objective values of a population.
+
+    Returns
+    -------
+    m_pool : numpy.ndarray
+        ``record_list`` without repeated rows.
+    list of int
+        Indices of the rows that were removed.
+    """
     m_pool = copy.deepcopy(record_list)
     idx = {}
     for i in range(0,len(m_pool)):
@@ -806,6 +1103,20 @@ def remove_duplicate_list(record_list):
 #-----------------------------------------------------------------------------#
 def remove_duplicate_same_population(same_population):
     # print('\nChecking duplicate chroms in the same population:')
+    """Remove repeated chromosomes from a population, keeping the first occurrence.
+
+    Parameters
+    ----------
+    same_population : numpy.ndarray
+        Population, one chromosome per row.
+
+    Returns
+    -------
+    pop_uniq : numpy.ndarray
+        Population without repeated chromosomes.
+    list of int
+        Indices of the chromosomes that were removed.
+    """
     pop_uniq = copy.deepcopy(same_population)
     a = {}
     for i in range(0, len(pop_uniq)):
@@ -825,6 +1136,25 @@ def remove_duplicate_ponds_settigs(f_offspring_size_val, f_offspring,
                                    f_simulated_population_size_val,
                                    f_simulated_population):
     
+    """Drop offspring whose pond sizes have already been simulated.
+
+    Parameters
+    ----------
+    f_offspring_size_val : numpy.ndarray
+        Pond size values (size steps per pond) of the offspring.
+    f_offspring : numpy.ndarray
+        Size chromosomes of the offspring (same rows as above).
+    f_simulated_population_size_val : numpy.ndarray
+        Pond size values of every solution simulated so far.
+    f_simulated_population : numpy.ndarray
+        Size chromosomes of every solution simulated so far (not used in the
+        comparison).
+
+    Returns
+    -------
+    f_offspring_size_val, f_offspring : numpy.ndarray
+        The offspring that have not been simulated before.
+    """
     f_offspring_size_val = copy.deepcopy(f_offspring_size_val)
     f_offspring = copy.deepcopy(f_offspring)
     
@@ -849,6 +1179,26 @@ def scatter_plot(f_fig_background, f_plot_title, f_cost, f_exposure,
                     f_plot_x_limit, f_plot_y_limit, f_plot_x_axis_label,
                     f_plot_y_axis_label, f_save_file):
     
+    """Save a scatter plot of cost against damage for one population.
+
+    Parameters
+    ----------
+    f_fig_background : str
+        Matplotlib style, e.g. ``'default'`` or ``'dark_background'``.
+    f_plot_title : str
+        Plot title.
+    f_cost, f_exposure : array_like
+        Values for the x axis (cost) and y axis (damage).
+    f_plot_legend_series : str
+        Legend label.
+    f_plot_x_limit, f_plot_y_limit : list of float
+        Axis limits as [min, max].
+    f_plot_x_axis_label, f_plot_y_axis_label : str
+        Axis labels.
+    f_save_file : str
+        Output file name. Without an extension the figure is saved as PNG
+        (12 x 8 inches at 300 dpi).
+    """
     plt.style.use(f_fig_background)
     plt.figure(figsize=(12, 8), dpi=300)
     
@@ -900,6 +1250,27 @@ def scatter_plot(f_fig_background, f_plot_title, f_cost, f_exposure,
 #-----------------------------------------------------------------------------#
 def separate_new_old(f_new_population, f_old_population):
     # print('\n' 'Checking new and old chroms in new population')
+    """Split a new population into solutions kept from the old one and new ones.
+
+    Parameters
+    ----------
+    f_new_population, f_old_population : numpy.ndarray
+        Populations to compare, one solution per row.
+
+    Returns
+    -------
+    f_new_chroms : numpy.ndarray
+        Rows of the new population that are not in the old population.
+    f_old_chroms : numpy.ndarray
+        Rows of the new population that were already in the old population.
+    f_old_chroms_index : list of int
+        Row indices (in the new population) of ``f_old_chroms``.
+
+    Notes
+    -----
+    If no solution of the old population is kept, ``f_old_chroms_index`` is
+    never assigned and the function raises ``UnboundLocalError``.
+    """
     f_new_chroms = copy.deepcopy(f_new_population)
     f_old_chroms = copy.deepcopy(f_new_population)
     # for new and old we used f_new_population. For new_chroms, we
@@ -925,6 +1296,23 @@ def separate_new_old(f_new_population, f_old_population):
 #-----------------------------------------------------------------------------#
 def remove_same_objectives_population(f_comb_population, f_dup_idx_obj):
     # print('\n' 'Checking duplicate chroms in different populations:')
+    """Delete the given rows from a population.
+
+    Used to drop solutions whose objective values repeat those of another
+    solution (row indices from ``remove_duplicate_list``).
+
+    Parameters
+    ----------
+    f_comb_population : numpy.ndarray
+        Population, one solution per row.
+    f_dup_idx_obj : list of int
+        Row indices to delete.
+
+    Returns
+    -------
+    numpy.ndarray
+        Population without those rows.
+    """
     comb_pop = copy.deepcopy(f_comb_population)
     a = copy.deepcopy(f_dup_idx_obj)
 
