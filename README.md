@@ -16,6 +16,7 @@ Earlier versions: [CONFIGURE v1.0](https://github.com/asidurrehman/Configure10) 
 - [Overview](#overview)
 - [How it works](#how-it-works)
 - [Repository structure](#repository-structure)
+- [Understanding the code](#understanding-the-code)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Input data and folder layout](#input-data-and-folder-layout)
@@ -69,6 +70,20 @@ Configure12/
 ├── CHANGELOG.md
 └── LICENSE
 ```
+
+## Understanding the code
+
+Both Python files contain detailed comments written for people who want to understand, run or adapt the framework. A suggested reading order:
+
+1. **`configure12_main.py`, top of the file.** The **HOW THIS SCRIPT WORKS** block lists the steps of a run in order (STEP 1 to STEP 9, with sub-steps 8a–8g for the generation loop). Each step has a matching `STEP n` header further down, so you can search for it.
+2. **NAMING CONVENTIONS**, directly below. It explains how one pond design is stored in three linked forms (location chromosome, size chromosome, size values) and what the variable prefixes mean (`i_` initial, `p_` parents, `o_` offspring, `comb_` combined, `f_` fittest, `gen_`, `simulated_`, `opt_`).
+3. **The rest of `configure12_main.py`**, step by step. Inline comments give array shapes, units and the reason for each step, including how the Expected Annual Damage is calculated and how the stopping rule works.
+4. **`configure12_functions.py`.** An overview at the top lists every function and its role. Comments inside the functions walk through the NSGA-II operators (non-dominated sorting, crowding distance, tournament selection, crossover and mutation), and through how ponds are dug into the DEM, how CityCAT is run and how exposure and damage are calculated.
+
+Two kinds of tagged comments are worth searching for:
+
+- `USER INPUT:` marks values you may want to change that are still set in the code, such as pond depth, size step, grid-cell area and the genetic operator probabilities. Most run settings are in [`config.yaml`](config.yaml) instead.
+- `NOTE (known issue):` marks known limitations and possible bugs in the published code. They are left unchanged so that results stay identical to the article.
 
 ## Requirements
 

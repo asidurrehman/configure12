@@ -42,6 +42,31 @@ from rasterio.transform import from_origin
 
 warnings.filterwarnings("ignore")
 
+#-----------------------------------------------------------------------------#
+# OVERVIEW OF THIS MODULE
+#-----------------------------------------------------------------------------#
+# All functions used by configure12_main.py (see HOW THIS SCRIPT WORKS there).
+#   Flood model and damage:
+#     spatial_indices()     one-off CityCAT run linking buildings to grid cells
+#     read_dem_ascii()      read the original DEM
+#     citycat_exposure()    dig the ponds into the DEM, run CityCAT for every
+#                           rainfall, then work out exposure, damage and cost
+#     auc_func()            area under the cost-damage curve (stopping rule)
+#   NSGA-II genetic algorithm:
+#     initial_pop()                         random initial designs
+#     non_dominated_sorting()               rank designs into Pareto fronts
+#     calculate_crowding_distance()         how isolated a design is in its front
+#     fitness_sort()                        order designs from fittest to least fit
+#     fitter_parent()                       binary tournament selection
+#     crossover_uniform_mutation_bitflip()  create two children
+#     remove_duplicate_list(), remove_duplicate_same_population(),
+#     remove_duplicate_ponds_settigs(), remove_same_objectives_population(),
+#     separate_new_old()                    bookkeeping of repeated designs
+#   Plotting: scatter_plot()
+# Arguments start with f_ (function argument). The three forms of a pond design
+# (location chromosome, size chromosome, size values) are explained under
+# NAMING CONVENTIONS in configure12_main.py.
+#
 ###############################################################################
 """ Functions section starts here """
 ###############################################################################
@@ -88,6 +113,10 @@ def spatial_indices(f_bldg_file, f_run_path, f_idx_rainfall, f_idx_config,
     CityCAT is started through the Windows command shell
     (``cd <run_path> & citycat.exe -r R -c C``).
     """
+    # Run CityCAT once. Only the grid-cell coordinates of its maximum-depth CSV
+    # are used below; the depths themselves are ignored.
+    # NOTE (known issue): the command uses the Windows command shell
+    # (cd ... & citycat.exe), so it only works on Windows.
     subprocess.call('cd {run_path} & citycat.exe -r {r} -c {c}'.format
                     (run_path = f_run_path, r = f_idx_rainfall, 
                      c = f_idx_config), shell=True)
@@ -101,6 +130,8 @@ def spatial_indices(f_bldg_file, f_run_path, f_idx_rainfall, f_idx_config,
     # remember to check the buffer value
     buffer_value = 150  # 150 percent of grid or DEM spatial resolution
     
+    # Grid resolution dx = spacing of the first two data rows in x (or in y if
+    # they share the same x). The buffer is buffer_value % of dx.
     # first get the resolution of the grid
     df_res = pd.read_csv(f_csv_file, nrows=3)
     xdiff = df_res.iloc[2,0] - df_res.iloc[1,0]
@@ -113,6 +144,10 @@ def spatial_indices(f_bldg_file, f_run_path, f_idx_rainfall, f_idx_config,
     buffer_distance = ((buffer_value)/100)*dx 
     # buffer distance in percent of grid resolution
     
+    # Read the x, y coordinates of every grid cell. A cell's position in these
+    # lists (0, 1, 2, ...) is its data-line number in the depth CSV. Depths from
+    # later CityCAT runs are matched to cells by this number, which relies on
+    # every run listing the cells in the same order.
     x=[]
     y=[]
     with open(f_csv_file, 'r') as t:
@@ -120,6 +155,9 @@ def spatial_indices(f_bldg_file, f_run_path, f_idx_rainfall, f_idx_config,
         aline = t.readline()
         # loop through the file and extract x and y values and save them
         while aline != '':
+            # split on whitespace, tab or comma: column 0 = x, column 1 = y
+            # NOTE (known issue): the pattern is not a raw string (r'...'), so
+            # Python 3.12+ shows a SyntaxWarning; the pattern itself works.
             column = re.split('\s|\s\s|\t|,',str(aline))
             # re is the regex library: \s space, \t tab
             x.append(float(column[0]))
@@ -132,6 +170,8 @@ def spatial_indices(f_bldg_file, f_run_path, f_idx_rainfall, f_idx_config,
         # generate an index based on the line number of the x coordinates 
         cell_idx.append(idx)
     
+    # R-tree spatial index of the cell points, so that the cells near each
+    # building can be found without checking every cell of the domain.
     index = rtree.index.Index()  # create the spatial index
     for pt_idx, xi, yi in zip(cell_idx,x,y):
         index.insert(pt_idx, (xi,yi))
@@ -144,6 +184,12 @@ def spatial_indices(f_bldg_file, f_run_path, f_idx_rainfall, f_idx_config,
     # the columns 'fid' and 'geometry' need to exist as headers
     del(bldgs)
     
+    # For each building: draw a buffer polygon around it, take the cells whose
+    # points fall inside the buffer's bounding box (fast index query), then
+    # keep those that really lie inside the buffer. Each match adds one
+    # (building ID, cell line number) pair to buffer_list / cell_index.
+    # NOTE (known issue): shapely 2.x warns that the 'resolution' argument of
+    # buffer() is deprecated.
     for b_id, b_geom in zip(bldgs_df[str(shp_field)], bldgs_df['geometry']):
         buffer = shape(b_geom.buffer(float(buffer_distance), resolution=10))
         # create a buffer polygon around the building polygon
@@ -156,6 +202,7 @@ def spatial_indices(f_bldg_file, f_run_path, f_idx_rainfall, f_idx_config,
                 buffer_list.append(b_id)  # store the building ID
                 cell_index.append(cell)   # store the line index of the intersecting points
     
+    # (df_b is a sorted table of the same pairs; it is not returned or used)
     df_b = pd.DataFrame(list(zip(buffer_list, cell_index)), 
                         columns=[str(shp_field),'cell']) 
     df_b = df_b.sort_values(by=['cell'])    
@@ -183,12 +230,16 @@ def read_dem_ascii(file_path):
         Elevations, shape (nrows, ncols).
     """
     with open(file_path, 'r') as file:
+        # header: six 'key value' lines (ncols, nrows, xllcorner, yllcorner,
+        # cellsize, NODATA_value); the values are kept as strings
         metadata = {}
         for _ in range(6):
             line = file.readline().strip()
             key, value = line.split()
             metadata[key] = value
         
+        # the rest of the file is the elevation grid, one row of cells per line
+        # (northernmost row first)
         data = np.loadtxt(file)
     
     return metadata, data
@@ -234,13 +285,17 @@ def initial_pop(f_pop_size,f_chrom_len_ponds_locat, f_chrom_len_ponds_size,
         Number of size steps switched on for each pond, shape
         (f_pop_size, f_chrom_len_ponds_locat).
     """
+    # location chromosomes: random 0/1, shape (f_pop_size, number of ponds)
     i_pop_ponds_locat = np.random.randint(2, size = (f_pop_size,
                                                     f_chrom_len_ponds_locat))
     
     # set one chromosome to zero (no intervention baseline scenario)
     i_pop_ponds_locat[len(i_pop_ponds_locat)-2] = 0
+    # ... and the last one to all ones (every pond switched on)
     i_pop_ponds_locat[len(i_pop_ponds_locat)-1] = 1
 
+    # Size chromosomes: random 0/1, shape (f_pop_size, f_chrom_len_ponds_size),
+    # redrawn until all rows are different.
     # generate random population for size chromosomes
     i_pop_ponds_size = np.random.randint(2, size = (f_pop_size,
                                                     f_chrom_len_ponds_size))
@@ -254,8 +309,13 @@ def initial_pop(f_pop_size,f_chrom_len_ponds_locat, f_chrom_len_ponds_size,
         [i_pop_ponds_size_uniq,_] = remove_duplicate_same_population(
                                                             i_pop_ponds_size)
     
+    # last design: every size gene on, so (with every pond switched on) every
+    # pond is at full size
     i_pop_ponds_size_uniq[len(i_pop_ponds_size_uniq)-1] = 1
     
+    # Switch off the size genes of every pond whose location gene is 0, so that
+    # design has no pond there. (Rows were made unique before this step, so two
+    # designs can end up with the same size values after it.)
     for i in range(f_pop_size):
         for j in range(f_chrom_len_ponds_locat):
             if i_pop_ponds_locat[i, j] == 0:
@@ -263,6 +323,7 @@ def initial_pop(f_pop_size,f_chrom_len_ponds_locat, f_chrom_len_ponds_size,
                             f_ponds_gene_start[j]:f_ponds_gene_end[j]] = 0
                 
     # generate chromosomes for pond size values
+    # size value of pond j = number of its size genes that are 1
     i_pop_ponds_size_val = np.zeros([f_pop_size,f_chrom_len_ponds_locat])
     
     for i in range(f_pop_size):
@@ -296,11 +357,17 @@ def auc_func(cost, damage):
     float
         Area under the curve.
     """
+    # Sort the designs by cost, shift damage so that the lowest is 0, then
+    # integrate damage over cost with the trapezoidal rule. As the designs
+    # improve, the curve moves down and this area shrinks; the main script
+    # stops when it no longer shrinks noticeably.
     arr = np.column_stack((cost, damage))
     df = pd.DataFrame(arr, columns=['Cost', 'Damage'])
     df = df.sort_values(by='Cost')
     min_damage = df["Damage"].min()
     damage_adjust = df["Damage"].to_numpy() - min_damage
+    # NOTE (known issue): np.trapz was removed in recent NumPy 2.x releases,
+    # which is why requirements.txt keeps numpy < 2 (np.trapezoid replaces it).
     auc_var = np.trapz(damage_adjust, df['Cost'])
     return auc_var
 
@@ -394,6 +461,10 @@ def citycat_exposure(f_bldg_file,
     CityCAT is started through the Windows command shell
     (``cd <run_path> & citycat.exe -r R -c C``).
     """
+    # Outputs, one row per design:
+    #   f_chrom_cost          pond life cycle cost (million £), shape (n, 1)
+    #   f_chrom_cost_penalty  (not used)
+    #   f_chrom_ponds_volume  volume of each pond (m3), shape (n, number of ponds)
     f_chrom_cost = np.zeros(f_pop_size)[:,np.newaxis]
     f_chrom_cost_penalty = np.zeros(f_pop_size)[:,np.newaxis]
     f_chrom_ponds_volume = np.zeros([f_pop_size, f_chrom_len_ponds_locat])
@@ -401,30 +472,48 @@ def citycat_exposure(f_bldg_file,
     # len(f_ponds_grid_shp1['Id'].unique())
     
     # store building exposure
+    # (number of buildings per class; shape (n designs, n rainfalls))
     f_expo_low = np.zeros([f_pop_size, len(f_rainfall_num)]).astype(int)
     f_expo_medium = np.zeros([f_pop_size, len(f_rainfall_num)]).astype(int)
     f_expo_high = np.zeros([f_pop_size, len(f_rainfall_num)]).astype(int)
     
     # store damage cost
+    # (integer array, so each total damage is stored in whole pounds)
     f_damage_cost = np.zeros([f_pop_size, len(f_rainfall_num)]).astype(int)
     # store damage cost in millions
+    # (filled in below but not returned)
     f_damage_cost_m = np.zeros([f_pop_size, len(f_rainfall_num)]).astype(float)
     
 
+    # For each design: Part 1 select the pond cells and work out volume and
+    # cost; Part 2 burn the ponds into the DEM; Part 3 run CityCAT once per
+    # rainfall; Part 4 work out building exposure and direct damage.
     for pop in range(len(f_pop_ponds_size_val)): 
         # this loop iterates for each chromosome
         print("\n" "Gen.{0}: CityCAT simulating chromosome no. {1} of {2}"
               .format(str(f_generation), str(pop+1),
                                           str(len(f_pop_ponds_size_val))))    
+        # Remove the DEM written for the previous design.
+        # NOTE (known issue): the path is joined with a backslash, so this check
+        # only finds the file on Windows; elsewhere the file is simply overwritten
+        # further down.
         if os.path.isfile(f_run_path + '\Domain_DEM.asc'):
            os.remove(f_run_path + '\Domain_DEM.asc')
 
+        # ---- Part 1: pond cells, volume and cost ----
         # assign unit depth to genes with value 1
+        # f_ponds_area_steps: number of pond grid cells to dig for each pond =
+        # size steps x cells per step (4 with the default settings);
+        # shape (1, number of ponds)
         f_ponds_area_steps = f_pop_ponds_size_val[pop,:] * f_ponds_area_step_val
         
+        # Design with at least one pond: build a modified DEM. (A design without
+        # ponds uses the original DEM; see the else branch further down.)
         if np.sum(f_ponds_area_steps) != 0:
             # get indices where f_ponds_depth has a value, not zero
             # index plus one because index starts from zero but data id starts from one
+            # f_available_ponds: Ids of the ponds this design builds. Pond Id = column
+            # index + 1, so pond Ids must run 1, 2, ..., number of ponds.
             f_available_ponds = [index + 1 for index, value in enumerate(
                                             f_ponds_area_steps[0]) if value != 0]
             
@@ -438,6 +527,7 @@ def citycat_exposure(f_bldg_file,
             
             # compute the minimum elevation for each object ID in 
             # a separate geodataframe
+            # (one row per selected pond: its lowest cell)
             f_ponds_min_elevations = f_ponds_grid_shp_filter.loc[
                 f_ponds_grid_shp_filter.groupby('Id')['elevation']
                                             .idxmin()].reset_index(drop=True)
@@ -447,8 +537,12 @@ def citycat_exposure(f_bldg_file,
             f_ponds_area_val = f_ponds_area_steps[0,f_ponds_area_ids-1].astype(int)
             # subtracted one as pond Id starts from one while indices start from zero
             
+            # {pond Id: number of cells to dig}
             f_ponds_nearest_count = dict(zip(f_ponds_area_ids, f_ponds_area_val))
             
+            # A pond of n cells is made of the n cells closest to the pond's lowest cell
+            # (distance 0 for the lowest cell itself), so a pond grows outwards from its
+            # lowest point as its size value increases.
             # function to find nearest polygons
             def find_nearest_cells(gdf_subset, min_elevation_row, n):
                 min_geom = min_elevation_row.geometry
@@ -484,12 +578,16 @@ def citycat_exposure(f_bldg_file,
             f_ponds_level_vol = f_ponds_final_grid.groupby('Id'
                                             )['lev_vol'].sum().reset_index()
     
+            # (f_ponds_level_vol_array is not used further: the levelling volume is
+            # not part of the cost)
             f_ponds_level_vol_array = np.zeros(f_ponds_area_steps.shape)
             
             f_ponds_level_vol_array[0,f_ponds_area_ids-1] = (
                                                 f_ponds_level_vol['lev_vol'])
                                               
              
+            # pond volume (m3) = cells dug x cell area (m2) x pond depth (m);
+            # shape (1, number of ponds), 0 for ponds that are not built
             f_ponds_volume = (f_ponds_area_steps * f_ponds_grid_cell_area * 
                                                             f_ponds_depth)
             # here f_ponds_area represents the total number of grid cells of a pond
@@ -497,14 +595,21 @@ def citycat_exposure(f_bldg_file,
             f_chrom_ponds_volume[pop,:] = f_ponds_volume
             
             
+            # pond cost (million £) = volume x life cycle cost per m3 / 1,000,000,
+            # rounded to 3 decimals; the design's cost objective is the sum over its
+            # ponds
             f_ponds_cost = np.round((f_ponds_volume * f_pond_unit_vol_lcc)
                                                                 /1000000,3)
+            # (not used further)
             f_ponds_location = np.where(f_ponds_cost != 0, 1, 0)
           
             
             # calculate total cost (million £) of all ponds in the chromosome
             f_chrom_cost[pop] =  round(np.sum(f_ponds_cost),3)
             
+            # ---- Part 2: burn the ponds into the DEM ----
+            # Cut the pond cells out of the catchment polygon and give the rest a depth
+            # change of 0; the pond cells keep their pond_cell_total_depth (negative).
             # overlay with the catchment shapefile
             f_ponds_final_grid_catch_subtract = gpd.overlay(f_catch_shp,
                                         f_ponds_final_grid, how='difference')
@@ -516,6 +621,9 @@ def citycat_exposure(f_bldg_file,
                     ignore_index=True), crs = f_ponds_grid_shp_filter.crs)
 
             
+            # Raster grid identical to the original DEM. The header values are
+            # converted with int(), so an integer cell size and integer corner
+            # coordinates are assumed.
             # create a raster
             cell_size = int(f_dem_metadata['cellsize'])
                     
@@ -527,8 +635,11 @@ def citycat_exposure(f_bldg_file,
             xmax = xmin + (columns * cell_size)
             ymax = ymin + (rows * cell_size)
             
+            # from_origin takes the upper-left corner (xmin, ymax) and the cell size
             f_transform = from_origin(xmin, ymax, cell_size, cell_size)
             
+            # rasterize: each DEM cell gets the depth change of the polygon covering
+            # its centre (0 where there is none)
             # extract geometry and attribute values
             f_shapes = ((geom, value) for geom, value 
                       in zip(f_ponds_final_grid_catch_merg.geometry,
@@ -537,12 +648,16 @@ def citycat_exposure(f_bldg_file,
                                       out_shape=(rows, columns),
                                       transform=f_transform)
      
+            # lower the pond cells: new elevation = original + (negative) depth change
             f_ponds_dem = f_dem_data + f_ponds_burned_raster
         
         else:
+            # no pond in this design: CityCAT uses the original DEM
             f_ponds_dem = copy.deepcopy(f_dem_data)
             
             
+        # Write the DEM that CityCAT will use (Domain_DEM.asc in the run folder):
+        # the same header, then the elevations with 2 decimals.
         f_ponds_dem_path =  os.path.join(f_run_path, 'Domain_DEM.asc')
         
         with open(f_ponds_dem_path, 'w') as file:
@@ -552,11 +667,14 @@ def citycat_exposure(f_bldg_file,
             np.savetxt(file, f_ponds_dem, fmt='%.2f')
 
         
+        # ---- Part 3: run CityCAT once for each rainfall (return period) ----
         """ Run CityCAT """
         for rp in range(len(f_rainfall_num)):
             
             print("\n" "Simulating for Rainfall {0}".format(str(f_rainfall_num[rp])))
             
+            # CityCAT writes its results to R<rainfall>C<config>_SurfaceMaps. An old
+            # folder of that name is deleted first, so stale results are never read.
             run_folder = 'R{r}C{c}_SurfaceMaps'.format(r = f_rainfall_num[rp], 
                                                        c = f_config_num)
             # CityCAT output files path
@@ -571,6 +689,8 @@ def citycat_exposure(f_bldg_file,
             
             start_timestamp = pd.Timestamp.now()
             # print("CityCAT run = " + str(run))
+            # NOTE (known issue): started through the Windows command shell, so this
+            # only works on Windows.
             subprocess.call('cd {run_path} & citycat.exe -r {r} -c {c}'.format
                             (run_path = f_run_path, r = f_rainfall_num[rp],
                              c = f_config_num), shell=True)
@@ -579,8 +699,12 @@ def citycat_exposure(f_bldg_file,
             print ("Time taken: " + str(run_time))
           
             
+            # ---- Part 4: building exposure and direct damage ----
+            # (method adapted from the reference in the file header)
             """ Exposure calculation """
     
+            # Z: maximum water depth (m) of every grid cell, in file order (column 2
+            # of each line after the header)
             f=open(citycat_outputs_path + '/' + citycat_output_file)   
             Z=[]
             aline = f.readline().strip()       
@@ -602,6 +726,8 @@ def citycat_exposure(f_bldg_file,
     
             # based on the building ID the mean and maximum depths are
             # calculated and stored in a new data frame
+            # for each building: mean and 90th-percentile depth over its linked cells
+            # (rounded to 3 decimals)
             mean_depth = pd.DataFrame(df.groupby([str(f_shp_field)])
                             ['depth'].mean().astype(float)).round(3).reset_index(
                             level=0).rename(columns={'depth':'mean_depth'})  
@@ -619,11 +745,16 @@ def citycat_exposure(f_bldg_file,
             bldgs_df = gpd.GeoDataFrame(bldgs_data[[str(f_shp_field), 
                                                     'geometry', 'Type']])  
             # calculate the area for each building
+            # (m2 for a metric coordinate system, truncated to a whole number)
             bldgs_df['area'] = (bldgs_df.area).astype(int) 
             buildings_join = bldgs_df.merge(categ_df, on=str(f_shp_field), 
                                             how='left')
             
     
+            # Exposure classes (depths in m, p90 = 90th-percentile depth):
+            #   Low:    mean < 0.10 and p90 < 0.30, or no grid cell linked to it
+            #   Medium: mean < 0.10 and p90 >= 0.30, or 0.10 <= mean < 0.30 and p90 < 0.30
+            #   High:   mean >= 0.10 and p90 >= 0.30
             # conditions for classifying buildings according 
             # to the threshold values
             low_expo_cond = ((buildings_join['mean_depth'] >= 0) & 
@@ -652,6 +783,9 @@ def citycat_exposure(f_bldg_file,
             
             # add new columns in the geodataframe
             buildings_join['class'] = ''
+            # NOTE (known issue): dmg_cost starts as an integer column; pandas 3 refuses
+            # to store fractional damage values in it, which is why requirements.txt
+            # keeps pandas < 3.
             buildings_join['dmg_cost'] = 0
             
             # classify buildings
@@ -672,6 +806,8 @@ def citycat_exposure(f_bldg_file,
             buildings_join.loc[low_expo_cond, 'dmg_cost'] = 0  
             buildings_join.loc[nan_val_cond, 'dmg_cost'] = 0
             
+            # Damage is calculated for Medium and High buildings only; Low buildings
+            # have zero damage.
             # damage cost for medium and high exposure
             # buildings selection condition
             select_cond = (buildings_join['class'] != 'A) Low')
@@ -680,6 +816,11 @@ def citycat_exposure(f_bldg_file,
             # calculation if required
             # select_cond = (buildings_join['class'] == 'C) High')
             
+            # Residential: damage per building (£), interpolated from the residential
+            # table at the building's p90 depth.
+            # Retail, offices, public buildings (below): damage per m2 (£), interpolated
+            # at the p90 depth from column 1, 2 or 3 of the non-residential table,
+            # multiplied by the building area.
             # depth damage cost calculation for residential buildings
             # select 90th percentile depths
             p90_depth = (buildings_join.loc[select_cond & residential, 
@@ -725,10 +866,13 @@ def citycat_exposure(f_bldg_file,
             f_expo_high[pop,rp]= (buildings_join['class'] == 'C) High').sum()
             
             # calculate total damage cost
+            # total direct damage (£) over all buildings, stored as whole pounds
             f_damage_cost[pop,rp] = buildings_join['dmg_cost'].sum()
             # damage cost in millions
             f_damage_cost_m[pop,rp] = np.round(f_damage_cost[pop,rp]/1000000,3)
                
+    # The last value is the direct damage (£) for each rainfall;
+    # configure12_main.py calls it ..._chrom_damage_rps and turns it into EAD.
     return (f_chrom_ponds_volume, f_chrom_cost,
             f_expo_high, f_expo_medium, f_expo_low, f_damage_cost)
 
@@ -754,6 +898,13 @@ def non_dominated_sorting(population_size,f_chroms_obj_record):
         Front number (0 = non-dominated) mapped to the list of solution indices
         in that front.
     """
+    # Fast non-dominated sorting (Deb et al., 2002). Design p dominates q when
+    # p is no worse than q in both objectives and better in at least one
+    # (both minimised: column 0 = cost, column 1 = damage/EAD).
+    #   s[p]      designs that p dominates
+    #   n[p]      number of designs that dominate p
+    #   front[i]  designs in front i (front 0 = dominated by none)
+    #   rank[p]   front number of p (filled in but not returned)
     s,n={},{}
     front,rank={},{}
     front[0]=[]     
@@ -762,6 +913,8 @@ def non_dominated_sorting(population_size,f_chroms_obj_record):
         n[p]=0
         for q in range(population_size):
             
+            # the three conditions together mean: p <= q in both objectives and
+            # p < q in at least one, i.e. p dominates q
             if ((f_chroms_obj_record[p][0]<f_chroms_obj_record[q][0] and 
                  f_chroms_obj_record[p][1]<f_chroms_obj_record[q][1]) or 
                 (f_chroms_obj_record[p][0]<=f_chroms_obj_record[q][0] and 
@@ -770,6 +923,7 @@ def non_dominated_sorting(population_size,f_chroms_obj_record):
                 f_chroms_obj_record[p][1]<=f_chroms_obj_record[q][1])):
                 if q not in s[p]:
                     s[p].append(q)
+            # q dominates p
             elif ((f_chroms_obj_record[p][0]>f_chroms_obj_record[q][0] and 
                    f_chroms_obj_record[p][1]>f_chroms_obj_record[q][1]) or 
                   (f_chroms_obj_record[p][0]>=f_chroms_obj_record[q][0] and 
@@ -777,11 +931,14 @@ def non_dominated_sorting(population_size,f_chroms_obj_record):
                   (f_chroms_obj_record[p][0]>f_chroms_obj_record[q][0] and 
                    f_chroms_obj_record[p][1]>=f_chroms_obj_record[q][1])):
                 n[p]=n[p]+1
+        # nobody dominates p: it belongs to the first front
         if n[p]==0:
             rank[p]=0
             if p not in front[0]:
                 front[0].append(p)
     
+    # Peel off the fronts one by one: taking front i away lowers the count n[q]
+    # of every design it dominates; those that reach 0 form front i + 1.
     i=0
     while (front[i]!=[]):
         Q=[]
@@ -795,6 +952,7 @@ def non_dominated_sorting(population_size,f_chroms_obj_record):
         i=i+1
         front[i]=Q
                  
+    # the loop ends with an empty front, which is removed
     del front[len(front)-1]
     return front
 
@@ -822,6 +980,13 @@ def calculate_crowding_distance(f_front,f_chroms_obj_record):
     dict
         Front number mapped to a dict of {solution index: crowding distance}.
     """
+    # For each front: sort its designs by cost (dt) and by damage (de). For one
+    # objective, an interior design's distance is the gap between its two
+    # neighbours divided by the range of that objective in the front; the two
+    # end designs get a very large value (666666666 for cost, 333333333 for
+    # damage) so they are always preferred. The total is the sum over both
+    # objectives: larger = more isolated = preferred, which keeps the front
+    # spread out.
     distance = {}
     for i in range(len(f_front)):
         distance[i] = dict.fromkeys(f_front[i], 0)
@@ -890,12 +1055,15 @@ def fitness_sort(f_distance, f_pop_size):
     list of int
         Solution indices from fittest to least fit.
     """
+    # sort each front by crowding distance, largest first
     f_distance_sort = {}
     for i in range(len(f_distance)):
         f_distance_sort[i] = {k: v for k, v in sorted(f_distance[i].items(), 
                                                      key=lambda 
                                                      item: item[1], 
                                                      reverse = True)}
+    # then list the fronts in order (front 0 first): row numbers from fittest to
+    # least fit
     parents_offspring = [None]*f_pop_size
     a = 0
     for i in range(len(f_distance_sort)):
@@ -925,11 +1093,14 @@ def fitter_parent(f_sorted_fitness,f_pop_size):
     int
         Index of the selected parent.
     """
+    # draw two different designs at random
     pairs_rand = np.random.randint(f_pop_size, size = (1, 2))
     
     while pairs_rand[0,0] == pairs_rand[0,1]:
         pairs_rand = np.random.randint(f_pop_size, size = (1, 2))
     
+    # np.where gives each design's position in the fitness order; the one
+    # nearer the front (smaller position) wins
     if (np.where(f_sorted_fitness == pairs_rand[0,0]) < 
           np.where(f_sorted_fitness == pairs_rand[0,1])):
         return pairs_rand[0,0]
@@ -976,9 +1147,13 @@ def crossover_uniform_mutation_bitflip(f_p1, f_p2, f_p1_loc, f_p2_loc,
     f_c1_ponds_value, f_c2_ponds_value : numpy.ndarray
         Number of size steps switched on for each pond in each child.
     """
+    # the children start as copies of the parents
     f_c1, f_c2 = copy.deepcopy(f_p1), copy.deepcopy(f_p2)
     f_c1_loc, f_c2_loc = copy.deepcopy(f_p1_loc), copy.deepcopy(f_p2_loc)
     
+    # Uniform crossover: each gene of child 1 is replaced by parent 2's gene
+    # with probability f_co_prob (and each gene of child 2 by parent 1's).
+    # The location and size chromosomes are crossed separately.
     # create children for location chromosomes
     for i in range(len(f_c1_loc)):
         if np.random.rand() < f_co_prob:
@@ -988,6 +1163,8 @@ def crossover_uniform_mutation_bitflip(f_p1, f_p2, f_p1_loc, f_p2_loc,
         if np.random.rand() < f_co_prob:
             f_c2_loc[i] = f_p1_loc[i]
     
+    # Bit-flip mutation: each gene flips 0 <-> 1 with probability f_m_prob[0]
+    # (location genes) or f_m_prob[1] (size genes, below).
     # mutate location chromosomes
     # first child
     for i in range(len(f_c1_loc)):
@@ -1030,6 +1207,8 @@ def crossover_uniform_mutation_bitflip(f_p1, f_p2, f_p1_loc, f_p2_loc,
                 f_c2[i] = 0
     
     
+    # A pond switched off in a child's location chromosome gets all its size
+    # genes set to 0 (no pond).
     for j in range(f_chrom_len_ponds_locat):
         if f_c1_loc[j] == 0:
             f_c1[p_start_locs[j]:p_end_locs[j]] = 0
@@ -1037,6 +1216,7 @@ def crossover_uniform_mutation_bitflip(f_p1, f_p2, f_p1_loc, f_p2_loc,
             f_c2[p_start_locs[j]:p_end_locs[j]] = 0
         
     # check if both children represent the same pond settings
+    # size value = number of size genes switched on for each pond
     f_c1_ponds_value = np.zeros(f_chrom_len_ponds_locat)
     f_c2_ponds_value = np.zeros(f_chrom_len_ponds_locat)
     
@@ -1045,6 +1225,9 @@ def crossover_uniform_mutation_bitflip(f_p1, f_p2, f_p1_loc, f_p2_loc,
                 f_c1[p_start_locs[j]:p_end_locs[j]])
         f_c2_ponds_value[j] = np.sum(
                 f_c2[p_start_locs[j]:p_end_locs[j]])
+    # If both children have identical pond sizes, redraw child 2's size
+    # chromosome from the parents (crossover only, no mutation) until it
+    # differs, at most 5000 times.
     d = 0
     while np.all(f_c1_ponds_value == f_c2_ponds_value) == True and d < 5000:
         f_c2 = copy.deepcopy(f_p2)
@@ -1083,6 +1266,8 @@ def remove_duplicate_list(record_list):
     list of int
         Indices of the rows that were removed.
     """
+    # Compare every pair of rows; a row equal to an earlier row is marked for
+    # removal (dict keys stop a row being marked twice).
     m_pool = copy.deepcopy(record_list)
     idx = {}
     for i in range(0,len(m_pool)):
@@ -1117,6 +1302,8 @@ def remove_duplicate_same_population(same_population):
     list of int
         Indices of the chromosomes that were removed.
     """
+    # same approach as remove_duplicate_list(): mark rows equal to an earlier
+    # row, then delete them
     pop_uniq = copy.deepcopy(same_population)
     a = {}
     for i in range(0, len(pop_uniq)):
@@ -1158,6 +1345,8 @@ def remove_duplicate_ponds_settigs(f_offspring_size_val, f_offspring,
     f_offspring_size_val = copy.deepcopy(f_offspring_size_val)
     f_offspring = copy.deepcopy(f_offspring)
     
+    # Compare each offspring's size values with every design simulated so far;
+    # matches are removed so that no design is simulated twice.
     a = {}
     for i, f_sim in enumerate(f_simulated_population_size_val):
         for j , f_offsp in enumerate(f_offspring_size_val):
@@ -1208,6 +1397,7 @@ def scatter_plot(f_fig_background, f_plot_title, f_cost, f_exposure,
     plt.xlim(f_plot_x_limit[0], f_plot_x_limit[1])
     plt.ylim(f_plot_y_limit[0], f_plot_y_limit[1])
     
+    # (both branches use the same edge colour)
     if f_fig_background == 'dark_background':
         edgecolors_evolving = '#2E75B6'
         
@@ -1220,6 +1410,7 @@ def scatter_plot(f_fig_background, f_plot_title, f_cost, f_exposure,
                alpha=1, marker='o', 
                label='Evolving population')
     
+    # the legend text comes from f_plot_legend_series
     # add the series legend
     plt.legend([f_plot_legend_series], 
                loc ="upper right", 
@@ -1239,6 +1430,7 @@ def scatter_plot(f_fig_background, f_plot_title, f_cost, f_exposure,
        
     plt.title(f_plot_title, fontsize = 18)
     
+    # f_save_file has no extension, so matplotlib saves a PNG
     # save figure
     plt.savefig(f_save_file, dpi='figure', transparent = False, 
                 bbox_inches = 'tight', pad_inches = 0.5)
@@ -1276,6 +1468,7 @@ def separate_new_old(f_new_population, f_old_population):
     # for new and old we used f_new_population. For new_chroms, we
     # delete old chroms from the new population. For old_chroms, we
     # select old chroms from the new population
+    # mark every row of the new population that also appears in the old one
     a = {}
     for i in range(0,len(f_old_population)):
         for j in range(0,len(f_new_population)):
@@ -1284,6 +1477,9 @@ def separate_new_old(f_new_population, f_old_population):
                 #       'equal to chromosome no. {0} in old population'
                 #       .format(j))
                 a[j] = j
+    # NOTE (known issue): f_old_chroms_index is only assigned inside this if
+    # block, so the return below raises UnboundLocalError when no design of
+    # the old population was kept.
     if a!={}:
         f_new_chroms = np.delete(f_new_chroms, list(a.values()),0)
         f_old_chroms = f_old_chroms[list(a.values())]
@@ -1316,6 +1512,8 @@ def remove_same_objectives_population(f_comb_population, f_dup_idx_obj):
     comb_pop = copy.deepcopy(f_comb_population)
     a = copy.deepcopy(f_dup_idx_obj)
 
+    # Delete the listed rows (indices from remove_duplicate_list()) so that
+    # this array stays aligned with the de-duplicated objective values.
     if a!=[]:
         comb_pop = np.delete(comb_pop, a, 0)
         # print('....\n {0} duplicate chroms from population 1 deleted'

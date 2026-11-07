@@ -9,6 +9,7 @@ Repository tidy-up. The optimisation logic and its results are unchanged.
 ### Added
 - `config.yaml` for the run folder and main run settings, with a `--config` option to use another file.
 - Docstrings for every function in `configure12_functions.py`.
+- Detailed explanatory comments throughout the code (comments only; no code changed).
 - Automated tests (`tests/`) using a synthetic case and a stand-in for CityCAT, and a GitHub Actions workflow that runs them on Windows and Linux.
 - `CITATION.cff`, `requirements.txt`, `pyproject.toml`, `.gitignore` and this changelog.
 
