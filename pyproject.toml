@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "configure12"
+version = "1.2.0"
+description = "CONFIGURE v1.2: NSGA-II and CityCAT optimisation of detention pond locations and sizes for urban flood risk management"
+readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{ name = "Asid Ur Rehman" }]
+requires-python = ">=3.10,<3.13"
+keywords = ["flood risk", "blue-green infrastructure", "detention ponds",
+            "NSGA-II", "multi-objective optimisation", "CityCAT"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Hydrology",
+]
+# Keep in step with requirements.txt
+dependencies = [
+    "numpy>=1.23,<2",
+    "pandas>=1.5,<3",
+    "geopandas>=0.12",
+    "shapely>=2.0",
+    "rtree>=1.0",
+    "rasterio>=1.3",
+    "matplotlib>=3.6",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[project.urls]
+Repository = "https://github.com/asidurrehman/Configure12"
+Article = "https://doi.org/10.1016/j.ijdrr.2025.105901"
+
+[tool.setuptools]
+# The function module can be imported; configure12_main.py is a script that
+# runs the optimisation, so it is run from the repository folder instead.
+py-modules = ["configure12_functions"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    # pandas 2.x warns when damage values (floats) are written to an integer
+    # column; this is expected (see the pandas < 3 pin in requirements.txt).
+    "ignore:Setting an item of incompatible dtype:FutureWarning",
+]
+
+[tool.ruff]
+extend-exclude = [".venv", "venv"]
+
+[tool.ruff.lint]
+# Only syntax errors and undefined names: the code style is left as published.
+select = ["E9", "F63", "F7", "F82"]
